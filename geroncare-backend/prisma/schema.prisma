@@ -1,0 +1,828 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================================
+// CORE USER MANAGEMENT
+// ============================================================================
+
+enum UserRole {
+  CUSTOMER
+  CARER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+  PENDING_VERIFICATION
+}
+
+model User {
+  id            String      @id @default(uuid())
+  email         String      @unique
+  phone         String      @unique
+  passwordHash  String
+  role          UserRole
+  status        UserStatus  @default(PENDING_VERIFICATION)
+
+  // Profile
+  firstName     String
+  lastName      String
+  avatar        String?
+  dateOfBirth   DateTime?
+  gender        String?
+
+  // Address
+  address       String?
+  city          String?
+  state         String?
+  country       String      @default("Nigeria")
+  latitude      Float?
+  longitude     Float?
+
+  // Verification
+  emailVerified Boolean     @default(false)
+  phoneVerified Boolean     @default(false)
+
+  // Security
+  lastLoginAt   DateTime?
+  lastLoginIp   String?
+  twoFactorEnabled Boolean  @default(false)
+  refreshToken  String?     // For refresh token storage
+
+  // Relations
+  customer      Customer?
+  carer         Carer?
+  sessions      Session[]
+  notifications Notification[]
+
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@index([email])
+  @@index([phone])
+  @@index([role, status])
+  @@index([latitude, longitude]) // Geospatial queries
+  @@map("users")
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  token        String   @unique
+  refreshToken String?  @unique
+  deviceInfo   String?
+  ipAddress    String?
+  userAgent    String?
+
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([userId])
+  @@index([token])
+  @@map("sessions")
+}
+
+// ============================================================================
+// CUSTOMER SIDE
+// ============================================================================
+
+model Customer {
+  id                String   @id @default(uuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Preferences
+  preferredLanguage String?
+  emergencyContact  String?
+  emergencyPhone    String?
+
+  // Relations
+  elderlyProfiles   ElderlyProfile[]
+  careRequests      CareRequest[]
+  bookings          Booking[]
+  reviews           Review[]          @relation("CustomerReviews")
+  receivedReviews   Review[]          @relation("ReviewedCustomer")
+  messages          Message[]
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@map("customers")
+}
+
+model ElderlyProfile {
+  id                String    @id @default(uuid())
+  customerId        String
+  customer          Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  // Basic Info
+  name              String
+  age               Int
+  gender            String
+  photo             String?
+
+  // Health Information
+  medicalConditions String[]  // Array: ["diabetes", "hypertension"]
+  disabilities      String[]
+  allergies         String[]
+  medications       Json?     // {name: "Aspirin", dosage: "100mg", frequency: "daily"}
+
+  // Mobility & Activity
+  mobilityLevel     MobilityLevel
+  activityLevel     ActivityLevel
+  assistiveDevices  String[]  // ["wheelchair", "walker"]
+
+  // Care Needs
+  careNeeds         String[]  // ["medication_management", "meal_prep"]
+  specialRequirements String?
+
+  // Emergency
+  doctorName        String?
+  doctorPhone       String?
+  hospitalPreference String?
+
+  // Relations
+  careRequests      CareRequest[]
+  bookings          Booking[]
+
+  isActive          Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([customerId])
+  @@map("elderly_profiles")
+}
+
+enum MobilityLevel {
+  FULLY_MOBILE
+  PARTIALLY_MOBILE
+  WHEELCHAIR_BOUND
+  BEDRIDDEN
+}
+
+enum ActivityLevel {
+  VERY_ACTIVE
+  MODERATELY_ACTIVE
+  MINIMALLY_ACTIVE
+  INACTIVE
+}
+
+// ============================================================================
+// CARER SIDE
+// ============================================================================
+
+model Carer {
+  id                String      @id @default(uuid())
+  userId            String      @unique
+  user              User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Professional Info
+  yearsOfExperience Int
+  bio               String?
+  languages         String[]    // ["English", "Yoruba", "Igbo"]
+
+  // Qualifications
+  certifications    Certification[]
+  education         String?
+  specializations   String[]    // ["dementia_care", "post_surgery"]
+
+  // Service Details
+  careTypes         CareType[]
+  serviceAreas      String[]    // ["Ikeja", "Victoria Island"]
+  maxTravelDistance Int?        // kilometers
+
+  // Pricing
+  hourlyRateBasic   Decimal     @db.Decimal(10, 2)
+  hourlyRateAdvanced Decimal?   @db.Decimal(10, 2)
+  liveinRateDaily   Decimal?    @db.Decimal(10, 2)
+
+  // Availability
+  availability      Json        // {monday: [{start: "08:00", end: "17:00"}], ...}
+  acceptingBookings Boolean     @default(true)
+
+  // Verification Status
+  verificationStatus VerificationStatus @default(PENDING)
+  backgroundCheckDate DateTime?
+  backgroundCheckStatus BackgroundCheckStatus?
+
+  // Performance Metrics
+  rating            Float       @default(0)
+  totalReviews      Int         @default(0)
+  completedBookings Int         @default(0)
+  cancellationRate  Float       @default(0)
+  responseTime      Int?        // average minutes to respond
+
+  // Banking
+  bankName          String?
+  accountNumber     String?
+  accountName       String?
+
+  // Relations
+  bookings          Booking[]
+  reviews           Review[]    @relation("CarerReviews")
+  receivedReviews   Review[]    @relation("ReviewedCarer")
+  messages          Message[]
+
+  // Flags
+  isFeatured        Boolean     @default(false)
+  isTopRated        Boolean     @default(false)
+
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  @@index([rating])
+  @@index([verificationStatus])
+  @@index([acceptingBookings, verificationStatus])
+  @@map("carers")
+}
+
+model Certification {
+  id          String   @id @default(uuid())
+  carerId     String
+  carer       Carer    @relation(fields: [carerId], references: [id], onDelete: Cascade)
+
+  type        CertificationType
+  name        String
+  issuedBy    String
+  issuedDate  DateTime
+  expiryDate  DateTime?
+
+  documentUrl String?
+  verified    Boolean  @default(false)
+  verifiedAt  DateTime?
+  verifiedBy  String?  // Admin ID
+
+  createdAt   DateTime @default(now())
+
+  @@index([carerId])
+  @@index([type, verified])
+  @@map("certifications")
+}
+
+enum CertificationType {
+  NURSING_LICENSE
+  MEDICAL_LICENSE
+  CPR_CERTIFICATION
+  FIRST_AID
+  ELDERLY_CARE_TRAINING
+  SPECIALIZED_CARE
+  BACKGROUND_CHECK
+  OTHER
+}
+
+enum CareType {
+  COMPANIONSHIP
+  PERSONAL_CARE
+  MEDICATION_MANAGEMENT
+  MEAL_PREPARATION
+  LIGHT_HOUSEKEEPING
+  TRANSPORTATION
+  DEMENTIA_CARE
+  POST_SURGERY_CARE
+  CHRONIC_DISEASE_MANAGEMENT
+  NURSING_CARE
+  DOCTOR_CONSULTATION
+}
+
+enum VerificationStatus {
+  PENDING
+  IN_REVIEW
+  VERIFIED
+  REJECTED
+}
+
+enum BackgroundCheckStatus {
+  PENDING
+  CLEAR
+  ISSUES_FOUND
+  EXPIRED
+}
+
+// ============================================================================
+// CARE REQUESTS & MATCHING
+// ============================================================================
+
+model CareRequest {
+  id                String          @id @default(uuid())
+  customerId        String
+  customer          Customer        @relation(fields: [customerId], references: [id])
+  elderlyProfileId  String
+  elderlyProfile    ElderlyProfile  @relation(fields: [elderlyProfileId], references: [id])
+
+  // Care Details
+  careTypes         CareType[]
+  careLevel         CareLevel
+  description       String
+  specialRequirements String?
+
+  // Schedule
+  startDate         DateTime
+  endDate           DateTime?
+  isRecurring       Boolean         @default(false)
+  recurrencePattern Json?           // {frequency: "weekly", days: ["monday", "friday"]}
+
+  // Location
+  location          String
+  latitude          Float?
+  longitude         Float?
+
+  // Budget
+  budgetMin         Decimal?        @db.Decimal(10, 2)
+  budgetMax         Decimal?        @db.Decimal(10, 2)
+
+  // Status
+  status            RequestStatus   @default(OPEN)
+
+  // Matching
+  matches           CareMatch[]
+  bookings          Booking[]
+
+  expiresAt         DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@index([customerId])
+  @@index([status, startDate])
+  @@index([latitude, longitude])
+  @@map("care_requests")
+}
+
+enum CareLevel {
+  BASIC
+  INTERMEDIATE
+  ADVANCED
+  MEDICAL
+}
+
+enum RequestStatus {
+  OPEN
+  MATCHED
+  FULFILLED
+  CANCELLED
+  EXPIRED
+}
+
+model CareMatch {
+  id              String       @id @default(uuid())
+  careRequestId   String
+  careRequest     CareRequest  @relation(fields: [careRequestId], references: [id])
+  carerId         String
+
+  // Matching Score
+  matchScore      Float        // 0-100
+  matchReasons    String[]     // ["high_rating", "nearby", "specialization_match"]
+
+  // Pricing
+  quotedRate      Decimal      @db.Decimal(10, 2)
+
+  // Status
+  status          MatchStatus  @default(SUGGESTED)
+
+  viewedByCustomer Boolean     @default(false)
+  viewedAt        DateTime?
+
+  createdAt       DateTime     @default(now())
+
+  @@unique([careRequestId, carerId])
+  @@index([careRequestId, status])
+  @@map("care_matches")
+}
+
+enum MatchStatus {
+  SUGGESTED
+  VIEWED
+  CONTACTED
+  DECLINED
+  BOOKED
+}
+
+// ============================================================================
+// BOOKINGS
+// ============================================================================
+
+model Booking {
+  id                String          @id @default(uuid())
+
+  // Relationships
+  customerId        String
+  customer          Customer        @relation(fields: [customerId], references: [id])
+  carerId           String
+  carer             Carer           @relation(fields: [carerId], references: [id])
+  elderlyProfileId  String
+  elderlyProfile    ElderlyProfile  @relation(fields: [elderlyProfileId], references: [id])
+  careRequestId     String?
+  careRequest       CareRequest?    @relation(fields: [careRequestId], references: [id])
+
+  // Booking Details
+  careTypes         CareType[]
+  careLevel         CareLevel
+
+  // Schedule
+  startDateTime     DateTime
+  endDateTime       DateTime
+  durationHours     Float
+
+  // Location
+  location          String
+  latitude          Float?
+  longitude         Float?
+
+  // Pricing
+  hourlyRate        Decimal         @db.Decimal(10, 2)
+  totalAmount       Decimal         @db.Decimal(10, 2)
+  platformFee       Decimal         @db.Decimal(10, 2)
+  carerEarnings     Decimal         @db.Decimal(10, 2)
+
+  // Status
+  status            BookingStatus   @default(PENDING)
+
+  // Confirmation
+  confirmedByCarerAt DateTime?
+  confirmedByCustomerAt DateTime?
+
+  // Execution
+  carerCheckedInAt  DateTime?
+  carerCheckedOutAt DateTime?
+  actualDuration    Float?
+
+  // Completion
+  completedAt       DateTime?
+
+  // Cancellation
+  cancelledAt       DateTime?
+  cancelledBy       String?         // userId
+  cancellationReason String?
+
+  // Special Instructions
+  specialInstructions String?
+
+  // Relations
+  payment           Payment?
+  reviews           Review[]
+  messages          Message[]
+  incidentReports   IncidentReport[]
+
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@index([customerId, status])
+  @@index([carerId, status])
+  @@index([status, startDateTime])
+  @@map("bookings")
+}
+
+enum BookingStatus {
+  PENDING           // Awaiting carer confirmation
+  CONFIRMED         // Carer accepted
+  IN_PROGRESS       // Currently happening
+  COMPLETED         // Successfully finished
+  CANCELLED         // Cancelled by either party
+  NO_SHOW           // Carer didn't show up
+  DISPUTED          // Issue raised
+}
+
+// ============================================================================
+// PAYMENTS
+// ============================================================================
+
+model Payment {
+  id                String          @id @default(uuid())
+  bookingId         String          @unique
+  booking           Booking         @relation(fields: [bookingId], references: [id])
+
+  // Amounts
+  amount            Decimal         @db.Decimal(10, 2)
+  platformFee       Decimal         @db.Decimal(10, 2)
+  carerEarnings     Decimal         @db.Decimal(10, 2)
+
+  // Payment Method
+  paymentMethod     PaymentMethod
+
+  // Paystack/Stripe Details
+  paymentReference  String          @unique
+  paymentGateway    String          // "paystack" | "stripe"
+  gatewayResponse   Json?
+
+  // Status
+  status            PaymentStatus   @default(PENDING)
+
+  // Escrow
+  heldInEscrow      Boolean         @default(true)
+  releasedAt        DateTime?
+
+  // Payout to Carer
+  payoutReference   String?
+  payoutStatus      PayoutStatus?
+  paidOutAt         DateTime?
+
+  // Refunds
+  refundAmount      Decimal?        @db.Decimal(10, 2)
+  refundReference   String?
+  refundedAt        DateTime?
+  refundReason      String?
+
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@index([bookingId])
+  @@index([status])
+  @@index([paymentReference])
+  @@map("payments")
+}
+
+enum PaymentMethod {
+  CARD
+  BANK_TRANSFER
+  WALLET
+  USSD
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum PayoutStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// ============================================================================
+// REVIEWS & RATINGS
+// ============================================================================
+
+model Review {
+  id          String   @id @default(uuid())
+  bookingId   String
+  booking     Booking  @relation(fields: [bookingId], references: [id])
+
+  // Who's reviewing whom
+  reviewerId  String   // Customer or Carer ID
+  revieweeId  String   // Carer or Customer ID
+  reviewType  ReviewType
+
+  // For Customer → Carer reviews
+  customerId  String?
+  customer    Customer? @relation("CustomerReviews", fields: [customerId], references: [id])
+  carerId     String?
+  carer       Carer?    @relation("CarerReviews", fields: [carerId], references: [id])
+
+  // For Carer → Customer reviews
+  reviewedCustomerId String?
+  reviewedCustomer   Customer? @relation("ReviewedCustomer", fields: [reviewedCustomerId], references: [id])
+  reviewedCarerId    String?
+  reviewedCarer      Carer?    @relation("ReviewedCarer", fields: [reviewedCarerId], references: [id])
+
+  // Ratings (1-5)
+  overallRating      Int      @db.SmallInt
+  punctuality        Int?     @db.SmallInt
+  professionalism    Int?     @db.SmallInt
+  careQuality        Int?     @db.SmallInt
+  communication      Int?     @db.SmallInt
+
+  // Review Content
+  comment            String?
+
+  // Moderation
+  isPublic           Boolean  @default(true)
+  isFlagged          Boolean  @default(false)
+  flagReason         String?
+  moderatedAt        DateTime?
+  moderatedBy        String?
+
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([carerId, isPublic])
+  @@index([bookingId])
+  @@map("reviews")
+}
+
+enum ReviewType {
+  CUSTOMER_TO_CARER
+  CARER_TO_CUSTOMER
+}
+
+// ============================================================================
+// MESSAGING
+// ============================================================================
+
+model Conversation {
+  id          String    @id @default(uuid())
+  bookingId   String?   @unique
+
+  participants String[]  // Array of user IDs
+
+  messages    Message[]
+
+  lastMessageAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([participants])
+  @@map("conversations")
+}
+
+model Message {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  bookingId      String?
+  booking        Booking?     @relation(fields: [bookingId], references: [id])
+
+  senderId       String
+  senderType     UserRole
+
+  // For polymorphic relations
+  customerId     String?
+  customer       Customer?    @relation(fields: [customerId], references: [id])
+  carerId        String?
+  carer          Carer?       @relation(fields: [carerId], references: [id])
+
+  // Message Content
+  content        String
+  messageType    MessageType  @default(TEXT)
+  attachments    String[]     // URLs to files
+
+  // Status
+  isRead         Boolean      @default(false)
+  readAt         DateTime?
+
+  // Metadata
+  metadata       Json?        // For system messages, etc.
+
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+  @@index([senderId])
+  @@map("messages")
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  DOCUMENT
+  SYSTEM
+}
+
+// ============================================================================
+// NOTIFICATIONS
+// ============================================================================
+
+model Notification {
+  id          String           @id @default(uuid())
+  userId      String
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type        NotificationType
+  title       String
+  message     String
+
+  // Related Entity
+  entityType  String?          // "booking", "payment", etc.
+  entityId    String?
+
+  // Delivery
+  channels    NotificationChannel[]
+  sentVia     String[]         // ["push", "email"]
+
+  // Status
+  isRead      Boolean          @default(false)
+  readAt      DateTime?
+
+  // Action
+  actionUrl   String?
+  actionLabel String?
+
+  createdAt   DateTime         @default(now())
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+enum NotificationType {
+  BOOKING_CREATED
+  BOOKING_CONFIRMED
+  BOOKING_CANCELLED
+  BOOKING_REMINDER
+  PAYMENT_RECEIVED
+  PAYMENT_RELEASED
+  REVIEW_RECEIVED
+  MESSAGE_RECEIVED
+  VERIFICATION_COMPLETE
+  SYSTEM_ALERT
+}
+
+enum NotificationChannel {
+  PUSH
+  EMAIL
+  SMS
+  IN_APP
+}
+
+// ============================================================================
+// INCIDENT REPORTS & SAFETY
+// ============================================================================
+
+model IncidentReport {
+  id          String         @id @default(uuid())
+  bookingId   String
+  booking     Booking        @relation(fields: [bookingId], references: [id])
+
+  reportedBy  String         // userId
+  reportedAgainst String?     // userId (optional)
+
+  type        IncidentType
+  severity    IncidentSeverity
+  description String
+
+  // Evidence
+  attachments String[]
+
+  // Resolution
+  status      IncidentStatus @default(OPEN)
+  resolvedAt  DateTime?
+  resolvedBy  String?        // Admin ID
+  resolution  String?
+
+  // Actions Taken
+  actionsTaken String[]
+
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([bookingId])
+  @@index([status, severity])
+  @@map("incident_reports")
+}
+
+enum IncidentType {
+  NO_SHOW
+  LATE_ARRIVAL
+  UNPROFESSIONAL_BEHAVIOR
+  SAFETY_CONCERN
+  QUALITY_ISSUE
+  PAYMENT_DISPUTE
+  HARASSMENT
+  OTHER
+}
+
+enum IncidentSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IncidentStatus {
+  OPEN
+  INVESTIGATING
+  RESOLVED
+  CLOSED
+}
+
+// ============================================================================
+// ANALYTICS & TRACKING
+// ============================================================================
+
+model ActivityLog {
+  id          String   @id @default(uuid())
+  userId      String?
+
+  action      String   // "booking_created", "profile_viewed", etc.
+  entityType  String?
+  entityId    String?
+
+  metadata    Json?
+
+  ipAddress   String?
+  userAgent   String?
+
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@map("activity_logs")
+}
